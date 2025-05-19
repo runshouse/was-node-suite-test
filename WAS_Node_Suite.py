@@ -46,7 +46,8 @@ import datetime
 import time
 import torch
 from tqdm import tqdm
-
+_CACHED_PACKAGES = None
+_CACHED_STYLES_LIST = None
 p310_plus = (sys.version_info >= (3, 10))
 
 MANIFEST = {
@@ -331,16 +332,97 @@ if was_config.__contains__('webui_styles'):
 #! SUITE SPECIFIC CLASSES & FUNCTIONS
 
 # Freeze PIP modules
+# def packages(versions=False):
+#     import sys
+#     import subprocess
+#     try:
+#         result = subprocess.check_output([sys.executable, '-m', 'pip', 'freeze'], stderr=subprocess.STDOUT)
+#         lines = result.decode().splitlines()
+#         return [line if versions else line.split('==')[0] for line in lines]
+#     except subprocess.CalledProcessError as e:
+#         print("An error occurred while fetching packages:", e.output.decode())
+#         return []
+# Around line 225 in the provided code
+# Around line 225 in the provided code
+# def packages(versions=False):
+#     global _CACHED_PACKAGES # Use the global cache variable
+#     import sys
+#     import subprocess
+
+#     # If we haven't cached yet, or if we need versioned list and didn't cache that specifically
+#     # For simplicity, we'll just cache the unversioned list. If versioned is needed frequently, cache it too.
+#     if _CACHED_PACKAGES is None:
+#         print(cstr("[WAS Node Suite] Running 'pip freeze' to cache package list...").msg) # Log when it runs
+#         try:
+#             result = subprocess.check_output([sys.executable, '-m', 'pip', 'freeze'], stderr=subprocess.STDOUT)
+#             lines = result.decode().splitlines()
+#             _CACHED_PACKAGES = [line.split('==')[0] for line in lines] # Cache unversioned names
+#         except subprocess.CalledProcessError as e:
+#             print(cstr(f"An error occurred while fetching packages: {e.output.decode()}").error)
+#             _CACHED_PACKAGES = [] # Cache empty list on error to avoid retrying constantly
+#             return [] # Return empty on error
+
+#     # If versioned list is specifically requested, and we only cached unversioned (this part is a simplification)
+#     # For now, this implementation primarily speeds up the unversioned checks which are more common.
+#     if versions:
+#         # This part is not fully optimized for `versions=True` by the current cache.
+#         # To fully optimize, you'd need to run pip freeze again or parse the full line.
+#         # For now, let's acknowledge this by re-running if versions are truly needed,
+#         # or ideally, the `versions=True` case is rare.
+#         # A more robust cache would store both or the full lines.
+#         # For now, we return based on the unversioned cache, which might be an issue if `versions=True` is critical.
+#         # Given typical use (checking if 'pkg_name' in packages()), unversioned is fine.
+#         # If a versioned list is needed, it might be better to refetch or make the cache store full lines.
+#         # Let's assume `versions=False` is the dominant use case for the many `if 'pkg' not in packages():` checks.
+#         # If you need the versioned list, the current cache doesn't directly provide it.
+#         # For simplicity of this optimization, we focus on the common case.
+#         # We could refetch here if versions=True but that defeats the purpose partly.
+#         # A simple approach if versioned list is rarely needed:
+#         if _CACHED_PACKAGES and not versions: # This is the common path for `if 'x' in packages()`
+#             return _CACHED_PACKAGES
+#         else: # Re-run for versioned, or if cache is empty from a previous error
+#             try:
+#                 result = subprocess.check_output([sys.executable, '-m', 'pip', 'freeze'], stderr=subprocess.STDOUT)
+#                 lines = result.decode().splitlines()
+#                 return [line if versions else line.split('==')[0] for line in lines]
+#             except subprocess.CalledProcessError as e:
+#                 print(cstr(f"An error occurred while fetching packages (versioned attempt): {e.output.decode()}").error)
+#                 return []
+
+#     return _CACHED_PACKAGES
+
+# At the top of the file, near other globals:
+_UNVERSIONED_PACKAGES_CACHE = None
+
+# Modified packages() function:
 def packages(versions=False):
+    global _UNVERSIONED_PACKAGES_CACHE
     import sys
     import subprocess
-    try:
-        result = subprocess.check_output([sys.executable, '-m', 'pip', 'freeze'], stderr=subprocess.STDOUT)
-        lines = result.decode().splitlines()
-        return [line if versions else line.split('==')[0] for line in lines]
-    except subprocess.CalledProcessError as e:
-        print("An error occurred while fetching packages:", e.output.decode())
-        return []
+
+    # If versions=True, we don't use the cache as it stores unversioned names.
+    # This path will remain as slow as before but is less common.
+    if versions:
+        try:
+            result = subprocess.check_output([sys.executable, '-m', 'pip', 'freeze'], stderr=subprocess.STDOUT)
+            lines = result.decode().splitlines()
+            return [line for line in lines] # Return full lines with versions
+        except subprocess.CalledProcessError as e:
+            print(cstr(f"An error occurred while fetching packages (versions=True): {e.output.decode()}").error)
+            return []
+
+    # For versions=False (the common case for `in` checks)
+    if _UNVERSIONED_PACKAGES_CACHE is None:
+        print(cstr("[WAS Node Suite] Running 'pip freeze' to cache unversioned package list...").msg)
+        try:
+            result = subprocess.check_output([sys.executable, '-m', 'pip', 'freeze'], stderr=subprocess.STDOUT)
+            lines = result.decode().splitlines()
+            _UNVERSIONED_PACKAGES_CACHE = [line.split('==')[0] for line in lines]
+        except subprocess.CalledProcessError as e:
+            print(cstr(f"An error occurred while fetching packages: {e.output.decode()}").error)
+            _UNVERSIONED_PACKAGES_CACHE = [] # Cache empty list on error
+    
+    return _UNVERSIONED_PACKAGES_CACHE
 
 def install_package(package, uninstall_first: Union[List[str], str] = None):
     if os.getenv("WAS_BLOCK_AUTO_INSTALL", 'False').lower() in ('true', '1', 't'):
@@ -9747,35 +9829,73 @@ class WAS_Image_To_Seed:
 
 #! TEXT NODES
 
+# class WAS_Prompt_Styles_Selector:
+#     def __init__(self):
+#         pass
+
+#     @classmethod
+#     def INPUT_TYPES(cls):
+#         style_list = []
+#         if os.path.exists(STYLES_PATH):
+#             with open(STYLES_PATH, "r") as f:
+#                 if len(f.readlines()) != 0:
+#                     f.seek(0)
+#                     data = f.read()
+#                     styles = json.loads(data)
+#                     for style in styles.keys():
+#                         style_list.append(style)
+#         if not style_list:
+#             style_list.append("None")
+#         return {
+#             "required": {
+#                 "style": (style_list,),
+#             }
+#         }
+
+#     RETURN_TYPES = (TEXT_TYPE,TEXT_TYPE)
+#     RETURN_NAMES = ("positive_string", "negative_string")
+#     FUNCTION = "load_style"
+
+#     CATEGORY = "WAS Suite/Text"
+_CACHED_PROMPT_STYLES_LIST = None # Define this globally, perhaps near STYLES_PATH definition
+
 class WAS_Prompt_Styles_Selector:
     def __init__(self):
         pass
 
     @classmethod
     def INPUT_TYPES(cls):
-        style_list = []
-        if os.path.exists(STYLES_PATH):
-            with open(STYLES_PATH, "r") as f:
-                if len(f.readlines()) != 0:
-                    f.seek(0)
-                    data = f.read()
-                    styles = json.loads(data)
-                    for style in styles.keys():
-                        style_list.append(style)
-        if not style_list:
-            style_list.append("None")
+        global _CACHED_PROMPT_STYLES_LIST # Use the global cache
+
+        if _CACHED_PROMPT_STYLES_LIST is None: # Load only if not cached
+            print(cstr("[WAS Node Suite] Loading and caching prompt styles...").msg)
+            loaded_style_list = []
+            if os.path.exists(STYLES_PATH):
+                try:
+                    with open(STYLES_PATH, "r", encoding='utf-8') as f: # Added encoding
+                        data = f.read()
+                        if data.strip(): # Check if data is not just whitespace
+                            styles = json.loads(data)
+                            for style in styles.keys():
+                                loaded_style_list.append(style)
+                        else:
+                            print(cstr(f"[WAS Node Suite] Styles file at {STYLES_PATH} is empty.").warning)
+                except json.JSONDecodeError:
+                    print(cstr(f"[WAS Node Suite] Error decoding JSON from styles file: {STYLES_PATH}").error)
+                except Exception as e:
+                    print(cstr(f"[WAS Node Suite] Error reading styles file {STYLES_PATH}: {e}").error)
+            
+            if not loaded_style_list:
+                _CACHED_PROMPT_STYLES_LIST = ["None"] # Cache ["None"] if empty or error
+            else:
+                _CACHED_PROMPT_STYLES_LIST = loaded_style_list
+        
+        # Always return from cache after first load
         return {
             "required": {
-                "style": (style_list,),
+                "style": (_CACHED_PROMPT_STYLES_LIST,),
             }
         }
-
-    RETURN_TYPES = (TEXT_TYPE,TEXT_TYPE)
-    RETURN_NAMES = ("positive_string", "negative_string")
-    FUNCTION = "load_style"
-
-    CATEGORY = "WAS Suite/Text"
-
     def load_style(self, style):
 
         styles = {}
